@@ -1058,4 +1058,105 @@ void mlir::torch::onnx_c::populateComMicrosoftDomain(
                                                           c);
         return success();
       });
+  patterns.onOp(
+      "SkipSimplifiedLayerNormalization", 1,
+      [](OpBinder binder, ConversionPatternRewriter &rewriter) {
+        Location loc = binder.getLoc();
+        SmallVector<Type> resultTypes;
+        Value input, skip, gamma, beta;
+        float epsilon;
+        if (binder.tensorOperandAtIndex(input, 0) ||
+            binder.tensorOperandAtIndex(skip, 1) ||
+            binder.tensorOperandAtIndex(gamma, 2) ||
+            binder.tensorResultTypes(resultTypes) ||
+            binder.f32FloatAttr(epsilon, "epsilon", 1e-5f))
+          return failure();
+
+        // Handle optional beta operand
+        int numOperands = binder.getNumOperands();
+        if (numOperands > 3) {
+          if (binder.tensorOperandAtIndex(beta, 3))
+            return failure();
+        }
+
+        // Add input and skip connection
+        Value addResult = Torch::AtenAddTensorOp::create(
+            rewriter, loc, input.getType(), input, skip,
+            Torch::ConstantIntOp::create(rewriter, loc,
+                                         rewriter.getI64IntegerAttr(1)));
+
+        // For LayerNormalization, the normalized shape is [-1] (last dimension)
+        auto inputType = cast<Torch::ValueTensorType>(addResult.getType());
+        if (!inputType.hasSizes()) {
+          return rewriter.notifyMatchFailure(binder.op,
+                                             "Expected input to have sizes");
+        }
+        SmallVector<Value> normalizedShape;
+        normalizedShape.push_back(Torch::ConstantIntOp::create(
+            rewriter, loc,
+            rewriter.getI64IntegerAttr(inputType.getSizes().back())));
+        Value normalizedShapeVal = Torch::PrimListConstructOp::create(
+            rewriter, loc,
+            Torch::ListType::get(Torch::IntType::get(binder.op->getContext())),
+            normalizedShape);
+
+        // Create epsilon constant
+        Value constEpsilon = Torch::ConstantFloatOp::create(
+            rewriter, loc, rewriter.getType<Torch::FloatType>(),
+            rewriter.getF64FloatAttr(epsilon));
+
+        // Use empty bias if not provided
+        Value actualBias = beta;
+        if (!actualBias) {
+          // Create zero bias with same shape as gamma
+          auto gammaType = cast<Torch::ValueTensorType>(gamma.getType());
+          if (!gammaType.hasSizes()) {
+            return rewriter.notifyMatchFailure(
+                binder.op, "Expected gamma to have static sizes");
+          }
+          ArrayRef<int64_t> gammaShape = gammaType.getSizes();
+          SmallVector<Value> shapeVals;
+          for (int64_t dim : gammaShape) {
+            shapeVals.push_back(Torch::ConstantIntOp::create(
+                rewriter, loc, rewriter.getI64IntegerAttr(dim)));
+          }
+          Value shapeList = Torch::PrimListConstructOp::create(
+              rewriter, loc,
+              Torch::ListType::get(
+                  Torch::IntType::get(binder.op->getContext())),
+              shapeVals);
+          actualBias = Torch::AtenZerosOp::create(
+              rewriter, loc, gamma.getType(), shapeList,
+              Torch::ConstantIntOp::create(
+                  rewriter, loc,
+                  rewriter.getI64IntegerAttr(
+                      static_cast<int64_t>(torch_upstream::ScalarType::Float))),
+              Torch::ConstantNoneOp::create(rewriter, loc),
+              Torch::ConstantNoneOp::create(rewriter, loc),
+              Torch::ConstantNoneOp::create(rewriter, loc));
+        }
+
+        // Perform layer normalization
+        auto layerNormResult = Torch::AtenNativeLayerNormOp::create(
+            rewriter, loc, resultTypes[0], /*meanType=*/inputType,
+            /*invStdDevType=*/inputType, addResult, normalizedShapeVal, gamma,
+            actualBias, constEpsilon);
+
+        SmallVector<Value> results;
+        results.push_back(layerNormResult.getResult0());
+
+        // Add optional outputs if requested
+        if (resultTypes.size() > 1) {
+          results.push_back(layerNormResult.getResult1()); // mean
+        }
+        if (resultTypes.size() > 2) {
+          results.push_back(layerNormResult.getResult2()); // inv_std_var
+        }
+        if (resultTypes.size() > 3) {
+          results.push_back(addResult); // input_skip_bias_sum
+        }
+
+        rewriter.replaceOp(binder.op, results);
+        return success();
+      });
 }
