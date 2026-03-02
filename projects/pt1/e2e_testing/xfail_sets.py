@@ -27,7 +27,6 @@ LINALG_XFAIL_SET = COMMON_TORCH_MLIR_LOWERING_XFAILS | {
     # unimplemented lowering torch -> linalg for torchvision.deform_conv2d
     # this is added to check the torch.onnx.export -> import_onnx -> torch path
     "DeformConv2D_basic",
-    "ReduceAnyDimFloatModule_basic",
     "UnfoldModule_basic",
     # _trilinear is an implementation of einsum, but sets dimensions to zero
     # if a dimension is specified in all expand lists, and not in sumdim list.
@@ -52,11 +51,8 @@ if torch_version_for_comparison() < version.parse("2.5.0.dev"):
         "ScaledDotProductAttentionBoolMaskModule_basic",
         "ScaledDotProductAttentionDifferentCausalModule_basic",
         "ScaledDotProductAttentionDifferentDynamicCausalModule_basic",
-        "ScaledDotProductAttentionDifferentModule_basic",
         "ScaledDotProductAttentionMaskModule_basic",
         "ScaledDotProductAttentionSameCausalModule_basic",
-        "ScaledDotProductAttentionSameDynamicModule_basic",
-        "ScaledDotProductAttentionSameModule_basic",
     }
 
 LINALG_CRASHING_SET = {
@@ -405,7 +401,6 @@ TORCHDYNAMO_CRASHING_SET = {
 
 FX_IMPORTER_XFAIL_SET = {
     "TimeOutModule_basic",  # this test is expected to time out
-    "ReduceAnyDimFloatModule_basic",
     "AddFloatIntModule_basic",
     "AllBoolFalseModule_basic",
     "AllBoolTrueModule_basic",
@@ -959,11 +954,8 @@ FX_IMPORTER_STABLEHLO_XFAIL_SET = {
     "ScaledDotProductAttentionBoolMaskModule_basic",
     "ScaledDotProductAttentionDifferentCausalModule_basic",
     "ScaledDotProductAttentionDifferentDynamicCausalModule_basic",
-    "ScaledDotProductAttentionDifferentModule_basic",
     "ScaledDotProductAttentionMaskModule_basic",
     "ScaledDotProductAttentionSameCausalModule_basic",
-    "ScaledDotProductAttentionSameDynamicModule_basic",
-    "ScaledDotProductAttentionSameModule_basic",
     "SubIntModule_basic",
     "TensorToIntZeroRank_basic",
     "UpSampleNearest2dDynamicFactor_basic",
@@ -2957,6 +2949,7 @@ ONNX_XFAIL_SET = {
     "ConvolutionModule2DGroups_basic",
     "Convolution2DSingleIntTupleModule_basic",
     "ConvolutionModule2DTransposeNonUnitOutputPadding_basic",
+    "ConvolutionModule2DTransposePositiveEffectivePadding_basic",
     "ConvolutionModule2DTransposeScalarTupleParams_basic",
     "ConvolutionModule2DTransposeStrided_basic",
     "ConvolutionModule2DTranspose_basic",
@@ -3690,8 +3683,6 @@ FX_IMPORTER_TOSA_XFAIL_SET = {
     "Aten_EmbeddingBagExample_basic",
     "AvgPool1dIntModule_basic",
     "AvgPool1dStaticModule_basic",
-    "AvgPool1dNoPadCeilPadNotIncluded_basic",
-    "AvgPool1dPadCeilPadNotIncluded_basic",
     "AvgPool3dDiffKernelsStridesNoPadCeilPadNotIncluded_basic",
     "AvgPool3dDiffKernelsStridesPadCeilPadNotIncluded_basic",
     "AvgPool2dDivisorOverrideModule_basic",
@@ -3725,11 +3716,9 @@ FX_IMPORTER_TOSA_XFAIL_SET = {
     "ConvolutionBackwardModule2DDilated_basic",
     "ConvolutionBackwardModule2DPadded_basic",
     "ConvolutionBackwardModule2DStridedPaddedDilatedGrouped_basic",
-    "ConvolutionBackwardModule2DStrided_basic",
     "ConvolutionBackwardModule3DStatic_basic",
     "ConvolutionBackwardModule2D_basic",
     "ConvolutionModule2DGroups_basic",
-    "ConvolutionModule2DTransposeNonUnitOutputPadding_basic",
     "ConvolutionModule2DGroupedTranspose_basic",
     "ConvolutionModule3DGroups_basic",
     "ConvolutionModule3DGroupsStrided_basic",
@@ -3965,8 +3954,6 @@ FX_IMPORTER_TOSA_XFAIL_SET = {
     "TransposedConv1dNegativePadding_basic",
     "TransposedConv1dNegativePaddingUnitStrideDyn_basic",
     "TransposedConv1dNegativePaddingLarge_basic",
-    "TransposedConv2dNegativePadding_basic",
-    "TransposedConv2dPositiveAndNegativePadding_basic",
     "TransposedConv3dNegativePadding_basic",
     "UnsafeViewCollapseDynamicWithAtenSizeIntModule_basic",
     "InterpolateDynamicModule_sizes_nearest",
@@ -3997,11 +3984,8 @@ FX_IMPORTER_TOSA_XFAIL_SET = {
     "ScaledDotProductAttentionBoolMaskModule_basic",
     "ScaledDotProductAttentionDifferentCausalModule_basic",
     "ScaledDotProductAttentionDifferentDynamicCausalModule_basic",
-    "ScaledDotProductAttentionDifferentModule_basic",
     "ScaledDotProductAttentionMaskModule_basic",
     "ScaledDotProductAttentionSameCausalModule_basic",
-    "ScaledDotProductAttentionSameDynamicModule_basic",
-    "ScaledDotProductAttentionSameModule_basic",
     "ScaledDotProductAttentionGQAModule_basic",
     # error: 'tosa.scatter' op requires dimensions K >= W
     "IndexPut1DFloatNonAccumulateModule_basic",
@@ -4364,6 +4348,7 @@ ONNX_TOSA_XFAIL_SET = {
     "ConvolutionBackwardModule2D_basic",
     "ConvolutionModule2DGroups_basic",
     "ConvolutionModule2DTransposeNonUnitOutputPadding_basic",
+    "ConvolutionModule2DTransposePositiveEffectivePadding_basic",
     "ConvolutionModule2DTransposeStridedStatic_basic",
     "ConvolutionModule2DTransposeScalarTupleParams_basic",
     "ConvolutionModule2DTransposeStrided_basic",
@@ -4909,7 +4894,6 @@ ONNX_TOSA_XFAIL_SET = {
     # REMOVE WHEN ENABLE_GQA IS ADDED
     "ScaledDotProductAttentionBoolMaskModule_basic",
     "ScaledDotProductAttentionSameCausalModule_basic",
-    "ScaledDotProductAttentionSameDynamicModule_basic",
     "ScatterAddDynamicModule_basic",
     "ScatterReduceFloatMaxModule",
     "ScatterReduceFloatMaxModuleIncludeSelf",

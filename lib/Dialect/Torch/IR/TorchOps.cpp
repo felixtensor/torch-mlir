@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectResourceBlobManager.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LLVM.h"
@@ -180,14 +181,22 @@ static Value getScalarIntValue(Value input, Location loc,
     return nullptr;
 
   if (auto valueTensorLiteralOp = input.getDefiningOp<ValueTensorLiteralOp>()) {
-    if (inputDtype.isInteger(64)) {
-      auto val = cast<DenseIntElementsAttr>(valueTensorLiteralOp.getValue())
-                     .getSplatValue<int64_t>();
-      return Torch::ConstantIntOp::create(rewriter, loc,
-                                          rewriter.getI64IntegerAttr(val));
-    } else {
-      auto val = cast<DenseIntElementsAttr>(valueTensorLiteralOp.getValue())
-                     .getSplatValue<bool>();
+    DenseElementsAttr attr;
+    auto valAttr = valueTensorLiteralOp.getValueAttr();
+    if (auto elemAttr = dyn_cast<DenseElementsAttr>(valAttr))
+      attr = elemAttr;
+    if (auto resourceAttr = dyn_cast<DenseResourceElementsAttr>(valAttr)) {
+      auto *blob = resourceAttr.getRawHandle().getBlob();
+      if (!blob)
+        return nullptr;
+      attr = DenseElementsAttr::getFromRawBuffer(
+          cast<ShapedType>(resourceAttr.getType()), blob->getData());
+    }
+    if (attr && attr.isSplat()) {
+      auto splatAttr = attr.getSplatValue<IntegerAttr>();
+      auto val = splatAttr.getType().isSignedInteger()
+                     ? splatAttr.getValue().getSExtValue()
+                     : splatAttr.getValue().getZExtValue();
       return Torch::ConstantIntOp::create(rewriter, loc,
                                           rewriter.getI64IntegerAttr(val));
     }
@@ -423,12 +432,17 @@ void PrimLoopOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   Region &region = getRegion();
   if (!point.getTerminatorPredecessorOrNull()) {
-    regions.emplace_back(&region, region.getArguments().slice(1));
+    regions.emplace_back(&region);
     return;
   }
   assert(point.getTerminatorPredecessorOrNull()->getParentRegion() == &region);
-  regions.emplace_back(&region, region.getArguments().slice(1));
-  regions.emplace_back(getOperation(), getResults());
+  regions.emplace_back(&region);
+  regions.emplace_back(RegionSuccessor::parent());
+}
+
+ValueRange PrimLoopOp::getSuccessorInputs(RegionSuccessor successor) {
+  return successor.isParent() ? ValueRange(getResults())
+                              : ValueRange(getRegion().getArguments().slice(1));
 }
 
 bool PrimLoopOp::isForLike() {
@@ -494,7 +508,7 @@ void PrimIfOp::getSuccessorRegions(RegionBranchPoint point,
                                    SmallVectorImpl<RegionSuccessor> &regions) {
   // The `then` and the `else` region branch back to the parent operation.
   if (point.getTerminatorPredecessorOrNull()) {
-    regions.push_back(RegionSuccessor(getOperation(), getResults()));
+    regions.push_back(RegionSuccessor::parent());
     return;
   }
 
@@ -510,6 +524,10 @@ void PrimIfOp::getSuccessorRegions(RegionBranchPoint point,
   regions.push_back(RegionSuccessor(&getThenRegion()));
   regions.push_back(RegionSuccessor(&getElseRegion()));
   return;
+}
+
+ValueRange PrimIfOp::getSuccessorInputs(RegionSuccessor successor) {
+  return successor.isParent() ? ValueRange(getResults()) : ValueRange();
 }
 
 /// Replaces the given op with the contents of the given single-block region,
@@ -2475,12 +2493,15 @@ void AtenUnflattenIntOp::getCanonicalizationPatterns(
                                          "sizes must come from list construct");
     if (sizeValues.size() != 2)
       return failure();
-    int64_t dim0, dim1;
+    int64_t dim0 = Torch::kUnknownSize;
+    int64_t dim1 = Torch::kUnknownSize;
     bool dim0Constant = matchPattern(sizeValues[0], m_TorchConstantInt(&dim0));
     bool dim1Constant = matchPattern(sizeValues[1], m_TorchConstantInt(&dim1));
     if (!dim0Constant && !dim1Constant)
       return failure();
-    if (dim0 != 1 && dim1 != 1)
+    bool dim0IsOne = dim0Constant && dim0 == 1;
+    bool dim1IsOne = dim1Constant && dim1 == 1;
+    if (!dim0IsOne && !dim1IsOne)
       return failure();
     Value unflattenDim = op.getDim();
     int64_t dimAsInt;
@@ -2491,7 +2512,7 @@ void AtenUnflattenIntOp::getCanonicalizationPatterns(
     // the runtime asserts below are introduced to catch malformed unflatten ops
     // possibly generated from onnx IR.
     Value unsqueeze;
-    if (dim0 == 1) {
+    if (dim0IsOne) {
       // unsqueeze at dim
       FailureOr<Value> maybeUnsqueeze =
           Torch::unsqueezeTensor(rewriter, op, self, unflattenDim);
@@ -2512,7 +2533,7 @@ void AtenUnflattenIntOp::getCanonicalizationPatterns(
           rewriter, op.getLoc(), isMOneOrSameSize,
           rewriter.getStringAttr("unflatten sizes must be compatible"));
     }
-    if (dim1 == 1) {
+    if (dim1IsOne) {
       // unsqueeze at dim + 1
       Value dimPlusOne;
       if (!dimWasConstant) {
@@ -2643,7 +2664,8 @@ OpFoldResult AtenSelectIntOp::fold(FoldAdaptor adaptor) {
     return nullptr;
 
   if (self.isSplat())
-    return DenseElementsAttr::get(bty, self.getSplatValue<Attribute>());
+    return DenseElementsAttr::get(bty.clone(self.getElementType()),
+                                  self.getSplatValue<Attribute>());
 
   auto dimAttr = dyn_cast_or_null<IntegerAttr>(adaptor.getDim());
   auto indexAttr = dyn_cast_or_null<IntegerAttr>(adaptor.getIndex());
@@ -2659,7 +2681,7 @@ OpFoldResult AtenSelectIntOp::fold(FoldAdaptor adaptor) {
   }
 
   auto splattr = self.getValues<Attribute>()[index];
-  return DenseElementsAttr::get(bty, splattr);
+  return DenseElementsAttr::get(bty.clone(self.getElementType()), splattr);
 }
 
 //===----------------------------------------------------------------------===//
@@ -3206,9 +3228,18 @@ LogicalResult ValueTensorLiteralOp::inferReturnTypes(
   if (!attr)
     return failure();
   RankedTensorType tensorType = cast<RankedTensorType>(attr.getType());
-  ValueTensorType returnType =
-      ValueTensorType::get(tensorType.getContext(), tensorType.getShape(),
-                           tensorType.getElementType());
+
+  // Convert signless integers (except i1) to signed for torch compatibility
+  Type elementType = tensorType.getElementType();
+  if (auto intType = dyn_cast<IntegerType>(elementType)) {
+    if (intType.isSignless() && intType.getWidth() > 1) {
+      elementType =
+          IntegerType::get(context, intType.getWidth(), IntegerType::Signed);
+    }
+  }
+
+  ValueTensorType returnType = ValueTensorType::get(
+      tensorType.getContext(), tensorType.getShape(), elementType);
   inferredReturnTypes.push_back(returnType);
   return success();
 }
@@ -5373,7 +5404,7 @@ getSuccessorRegionsForCalculateOp(CalculateOp op, RegionBranchPoint point,
   Region *region = point.getTerminatorPredecessorOrNull()->getParentRegion();
   if (region == &op.getBody()) {
     // Body returns control to the outer op, passing through results.
-    regions.emplace_back(op.getOperation(), op.getResults());
+    regions.emplace_back(RegionSuccessor::parent());
     return;
   }
   assert(region == &op.getCalculation());
@@ -5386,6 +5417,10 @@ void ShapeCalculateOp::getSuccessorRegions(
   getSuccessorRegionsForCalculateOp(*this, point, regions);
 }
 
+ValueRange ShapeCalculateOp::getSuccessorInputs(RegionSuccessor successor) {
+  return successor.isParent() ? ValueRange(getResults()) : ValueRange();
+}
+
 //===----------------------------------------------------------------------===//
 // DtypeCalculateOp
 //===----------------------------------------------------------------------===//
@@ -5393,6 +5428,10 @@ void ShapeCalculateOp::getSuccessorRegions(
 void DtypeCalculateOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   getSuccessorRegionsForCalculateOp(*this, point, regions);
+}
+
+ValueRange DtypeCalculateOp::getSuccessorInputs(RegionSuccessor successor) {
+  return successor.isParent() ? ValueRange(getResults()) : ValueRange();
 }
 
 //===----------------------------------------------------------------------===//
